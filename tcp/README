@@ -1,0 +1,18 @@
+Rob Hoffmann, CS631
+Homework 2 & Extra Credit - tcp and tcpm
+
+tcp and tcpm trivially copy a file using read/write or mmap/memcpy, 
+respectively. Both programs perform the same string operations on parameters 
+that include a directory as the destination and throw errors if either source 
+or destination cannot be opened. Notice that in tcp the destination file is 
+opened with O_WRONLY, whereas in tcpm it is opened with O_RDWR. This is due to 
+the flag PROT_WRITE implying PROT_READ in the mmap call, so the file must 
+have been opened with read/write access.
+
+Also of note is that some garbage character must be written to the predetermined 
+end of the destination file before trying to memcpy. This is to increase the 
+size of the file before trying to map it into memory. Otherwise, the later 
+memcpy call will result in a segmentation fault.
+
+Both programs simulate behavior of the cp program by overwriting an existing 
+file if it is specified as the destination.
