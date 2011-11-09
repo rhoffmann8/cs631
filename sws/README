@@ -1,0 +1,56 @@
+CS631 - Advanced Programming in the UNIX Environment
+Final Project
+
+Implement the sws(1) command as described in the manual page provided to you
+at: http://www.cs.stevens.edu/~jschauma/631/sws.1.pdf
+
+As usual, the general homework guidelines apply:
+http://www.cs.stevens.edu/~jschauma/631/hw
+
+You should accompany the program with a Makefile and, if you have any
+commentary on your program, a README.  The due date for the final project is
+2011-12-20, 10:59:59.
+
+This is a non-trivial programming assignment -- do not postpone starting to
+work on this!  Try to first get the basics right, then add functionality one
+by one, always ensuring that the added code did not break any previous
+functionality.  If you're stuck, describe your problem on the mailing list.
+
+
+Considerations for this project:
+--------------------------------
+
+Please carefully read http://www.ietf.org/rfc/rfc1945.txt to understand
+version 1.0 of the Hyper Text Transfer Protocol.
+
+Please carefully read http://www.citycat.ru/doc/CGI/overview/overview.html
+to understand version 1.1 of the Common Gateway Interface.
+
+Your program should behave as one would expect from a regular system daemon.
+That is, it should detach from the controlling terminal and run in the
+background, accept multiple simultaneous connections, not generate any
+messages on stdout unless in debugging mode etc.
+
+Your program does have to return normal HTTP/1.0 status codes as described in
+the RFC.
+
+Your program does NOT need to support the POST method.
+
+Your program does NOT need to support the "-s dir -k key" options.
+
+Your program does NOT need to support logging.
+
+
+Extra credit:
+-------------
+
+The following are ways to gain extra-credit.  Please only start working on
+these features if you are satisfied with the basic functionality.
+
+Implementing support for IPv6: +10
+
+Implementing support for logging: +10
+
+Implementing support for POST: +30
+
+Implementing support for encrypted content: +50
