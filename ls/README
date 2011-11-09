@@ -1,0 +1,73 @@
+Rob Hoffmann, CS631
+Midterm - ls (list directory contents)
+24 October 2011	
+
+To do a clean install, type "make all". It will rebuild the entire project 
+and archive file. Usage can be viewed by typing ./ls -?
+
+More information can be found in the source file comments.
+
+== The Program ==
+This version of ls should (hopefully) behave identically to the standard
+ls utility. By default the program displays one file or directory per line,
+equivalent to using the -1 flag on the command line.
+
+When a logical file heirarchy is passed on the command line, the program 
+proceeds to retrieve the children of this heirarchy. It singles out the files
+and prints them first, deferring directories for later. Once done, it 
+iterates through the directories and prints out their children, recursing if
+necessary. For displaying, I created a structure called "print_info" -- 
+a multitude of these would serve as a linked list structure containing
+information to be printed after a directory traversal was done. I also 
+created a structure called "max_widths" in order to keep a running tally of
+which column values were the widest and using that information to format
+the column spacing appropriately. Thus, printing in long listing (-l or -n) 
+will generate a properly formatted list.
+
+== Error handling ==
+
+Handling errors in this program was a bit tricky. I had to distinguish
+between errors that warranted the program exiting and errors that should
+be printed to the user but not halt execution of the program.
+
+I created a global custom_errno to be set on failure of functions that do not
+set errno by default, such as malloc() returning NULL. In the event this is
+set, an error message is printed on the fly and the function returns. The 
+resulting custom_errno value of -1 causes the program to exit on failure.
+
+For functions that do set errno, I created a buffer called error_buff, which
+I used for customization of error messages. When the function returns after
+errno is set, the program prints both my error message and the standard error
+message via strerror. 
+
+I generally considered malloc() failure to be serious and did not allow the
+program to execute after such failure. In other instances, such as readlink()
+or human_readable() failure, I print an error message to stderr on the fly
+but either ignore the error or implement a workaround (for example, if 
+human_readable fails, fall back to displaying the actual size number). If 
+errno is set after a non-critical function failure, I print out the error and
+reset errno to 0 so execution can continue.
+
+On numerous occasions I wanted to just use goto, but I decided against it. As
+incomprehensible as the error handling may get in this program, I didn't want
+to risk the chance of letting myself misuse goto.
+
+== Side notes ==
+
+For the sorting by time options, -c and -u do not work if -t is not set
+before them. If -u or -c is specified along with -t, specifying -t again will
+not override either of them.
+
+Standard strcmp puts capital letters first. I did not like capital files 
+coming before lowercase ones, so I did not take capitalization into account.
+In standard ls, dot files are shown intertwined with regular ones (dot is 
+ignored in lexicographical sorting); however I did not like this and opted
+to leave dot files at the top of the printout.
+
+Like standard ls, if -n is specified anywhere, the UID and GID are numerical,
+even if -l is provided after it.
+
+If -f is specified, output is not sorted, period. Any subsequent sorting 
+flags do not override this.
+
+The -1 flag overrides -n in addition to -l, and vice versa.
