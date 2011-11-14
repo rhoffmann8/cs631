@@ -1,7 +1,5 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
