@@ -1,3 +1,10 @@
+/*
+ * Rob Hoffmann, CS631
+ * main.c - Main functions for simple web server
+ *
+ * Option parsing and creation of connections is handled here.
+ * IPV6 support is enabled using the -6 flag.
+ */
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -6,6 +13,7 @@
 #include <sys/wait.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,8 +27,7 @@
 #define MAX_CONN 20
 #define PENDING_CONN 10
 
-/* Default logfile, if none given */
-#define LOGFILE "sws.log"
+#define _PATH_DEVNULL "/dev/null"
 
 int main(int, char**);
 void mainloop(void);
@@ -38,7 +45,7 @@ mainloop() {
 	struct sigaction sig;
 	pid_t pid;
 	socklen_t sin_size;
-	int sock, domain;
+	int sock, domain, opt;
 	int conn, max_connections, pending_connections;
 	char buf[1024];
 
@@ -65,26 +72,15 @@ mainloop() {
 	}
 
 	/* Set domain */
-	if (!ipv6)
-		domain = AF_INET;
-	else
-		domain = AF_INET6;
+	domain = (ipv6 == 0) ? AF_INET : AF_INET6;
 
 	/* Set IP */
 	if (opts.ip) {
-		if (!ipv6) {
-			if ((inet_pton(domain, opts.ip, &sws.sin_addr)) <= 0) {
-				fprintf(stderr, "Invalid IP\n");
-				exit(EXIT_FAILURE);
-				/* NOTREACHED */
-			}
-		} else {
-			if ((inet_pton(domain, opts.ip, &sws6.sin6_addr))
-				<= 0) {
-				fprintf(stderr, "Invalid IP\n");
-				exit(EXIT_FAILURE);
-				/* NOTREACHED */
-			}
+		if ((inet_pton(domain, opts.ip, (ipv6 == 1) ?
+			(void*)&sws6.sin6_addr : (void*)&sws.sin_addr)) <= 0) {
+			fprintf(stderr, "Invalid IP\n");
+			exit(EXIT_FAILURE);
+			/* NOTREACHED */
 		}
 	} else {
 		if (!ipv6)
@@ -94,10 +90,7 @@ mainloop() {
 	}
 
 	/* Set maximum connections */
-	if (opts.debug == 1)
-		max_connections = 1;
-	else
-		max_connections = MAX_CONN;
+	max_connections = (opts.debug == 1) ? 1 : MAX_CONN;
 
 	/* Create socket */
 	if ((sock = socket(domain, SOCK_STREAM, 0)) < 0) {
@@ -106,20 +99,21 @@ mainloop() {
 		/* NOTREACHED */
 	}
 
+	opt = 1;
+	if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) < 0) {
+		perror("setsockopt");
+		exit(EXIT_FAILURE);
+		/* NOTREACHED */
+	}
+
 	/* Bind to specified address(es) */
 	sws.sin_family = sws6.sin6_family = domain;
-	if (!ipv6) {
-		if (bind(sock, (struct sockaddr*)&sws, sizeof(sws))) {
-			perror("binding stream socket");
-			exit(EXIT_FAILURE);
-			/* NOTREACHED */
-		}
-	} else {
-		if (bind(sock, (struct sockaddr*)&sws6, sizeof(sws6))) {
-			perror("binding stream socket");
-			exit(EXIT_FAILURE);
-			/* NOTREACHED */
-		}
+	if (bind(sock, (ipv6 == 1) ?
+		(struct sockaddr*)&sws6 : (struct sockaddr*)&sws,
+		(ipv6 == 1) ? sizeof(sws6) : sizeof(sws))) {
+		perror("binding stream socket");
+		exit(EXIT_FAILURE);
+		/* NOTREACHED */
 	}
 
 	/* Set up signal handler */
@@ -146,10 +140,10 @@ mainloop() {
 	/* Accept loop */
 	do {
 		conn = accept(sock, 0, &sin_size);
-		cur_connections++;
 		if (conn == -1)
 			perror("accept");
 		else {
+			cur_connections++;
 			if (cur_connections > max_connections)
 				close(conn);
 			else {
@@ -192,6 +186,7 @@ int
 main(int argc, char **argv) {
 
 	pid_t pid;
+	int fd;
 	char flag;
 	extern char *optarg;
 
@@ -260,10 +255,35 @@ main(int argc, char **argv) {
 			/* NOTREACHED */
 		}
 
+		if (setsid() < 0) {
+			perror("setsid");
+			exit(EXIT_FAILURE);
+			/* NOTREACHED */
+		}
+
+		if (chdir("/") < 0) {
+			perror("chdir");
+			exit(EXIT_FAILURE);
+			/* NOTREACHED */
+		}
+
 		/* Make sure we don't get output on console */
-		close(STDOUT_FILENO);
-		close(STDIN_FILENO);
-		close(STDERR_FILENO);
+		fd = open(_PATH_DEVNULL, O_RDWR, 0);
+		if (fd < 0) {
+			perror("opening descriptor for daemon");
+			exit(EXIT_FAILURE);
+			/* NOTREACHED */
+		} else {
+			if (dup2(fd, STDIN_FILENO) < 0 ||
+			    dup2(fd, STDOUT_FILENO) < 0 ||
+			    dup2(fd, STDERR_FILENO) < 0) {
+				perror("dup2");
+				exit(EXIT_FAILURE);
+				/* NOTREACHED */
+			}
+			if (fd > STDERR_FILENO)
+				(void)close(fd);
+		}
 	}
 
 	mainloop();
