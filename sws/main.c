@@ -163,7 +163,7 @@ mainloop() {
 					sws_request(conn);
 
 					close(conn);
-					exit(EXIT_SUCCESS);
+					(errno > 0) ? exit(EXIT_FAILURE) : exit(EXIT_SUCCESS);
 					/* NOTREACHED */
 				}
 				else {
@@ -232,10 +232,6 @@ main(int argc, char **argv) {
 	if (optind < argc) {
 		opts.dir = argv[optind];
 		optind++;
-	} else {
-		fprintf(stderr, "No content directory specified\n");
-		exit(EXIT_FAILURE);
-		/* NOTREACHED */
 	}
 
 	/* Option error checking done in sws_init */

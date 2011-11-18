@@ -31,4 +31,6 @@ void sws_log(const char *);
  * connected and the function will not close it. */
 void sws_request(const int);
 
+char* sws_process_request(const char*);
+
 #endif /* _SWS_H_ */
