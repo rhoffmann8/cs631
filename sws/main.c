@@ -27,8 +27,6 @@
 #define MAX_CONN 20
 #define PENDING_CONN 10
 
-#define _PATH_DEVNULL "/dev/null"
-
 int main(int, char**);
 void mainloop(void);
 void reap(int);
@@ -185,8 +183,6 @@ reap(int sig) {
 int
 main(int argc, char **argv) {
 
-	pid_t pid;
-	int fd;
 	char flag;
 	extern char *optarg;
 
@@ -239,46 +235,10 @@ main(int argc, char **argv) {
 
 	if (!opts.debug) {
 		/* Daemonize if -d not set */
-		if ((pid = fork()) < 0) {
-			perror("error forking for daemon");
+		if (daemon(0,0) < 0) {
+			perror("daemon");
 			exit(EXIT_FAILURE);
 			/* NOTREACHED */
-		}
-
-		/* Exit the parent */
-		if (pid > 0) {
-			exit(EXIT_SUCCESS);
-			/* NOTREACHED */
-		}
-
-		if (setsid() < 0) {
-			perror("setsid");
-			exit(EXIT_FAILURE);
-			/* NOTREACHED */
-		}
-
-		if (chdir("/") < 0) {
-			perror("chdir");
-			exit(EXIT_FAILURE);
-			/* NOTREACHED */
-		}
-
-		/* Make sure we don't get output on console */
-		fd = open(_PATH_DEVNULL, O_RDWR, 0);
-		if (fd < 0) {
-			perror("opening descriptor for daemon");
-			exit(EXIT_FAILURE);
-			/* NOTREACHED */
-		} else {
-			if (dup2(fd, STDIN_FILENO) < 0 ||
-			    dup2(fd, STDOUT_FILENO) < 0 ||
-			    dup2(fd, STDERR_FILENO) < 0) {
-				perror("dup2");
-				exit(EXIT_FAILURE);
-				/* NOTREACHED */
-			}
-			if (fd > STDERR_FILENO)
-				(void)close(fd);
 		}
 	}
 
