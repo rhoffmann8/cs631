@@ -36,7 +36,6 @@
 #define STATUS_503 "503 Service Unavailable"
 
 #define CRLF "\r\n"
-#define REQUEST_END "\r\n\r\n"
 
 char *__sws_cgidir;
 char *__sws_dir;
@@ -209,9 +208,7 @@ sws_request(const int sock) {
 	struct sockaddr_storage client;
 	char ipstr[INET6_ADDRSTRLEN];
 	char buf[BUFF_SIZE];
-	char request_buf[BUFF_SIZE];
 	char timestr[50];
-	char *status;
 	int port, rval;
 
 	bzero(&client, sizeof(struct sockaddr_storage));
@@ -260,7 +257,7 @@ sws_request(const int sock) {
 
 	/*
 	 * If simple request (HTTP/0.9), skip headers and respond
-	 * with entity body only.
+	 * with entity body only (RFC 1945 Sec. 6, 6.1)
 	 */
 	if (request.simple) {
 		//call file function & respond
@@ -278,33 +275,29 @@ sws_request(const int sock) {
 			fprintf(stderr, "Connection closed by client\n");
 			return;
 		}
-		/* Read until two instances of CRLF at the end */
+		/* Read until line containing only CRLF */
 	} while (!((strlen(buf) == 2) && (strcmp(buf, CRLF) == 0)));
 
 	now = time(NULL);
 	strftime(timestr, sizeof(timestr),
 		"%a, %e %b %Y %T %Z", gmtime(&now));
 
-	if (!strcmp((status = sws_process_request(request_buf)), STATUS_200)) {
-		sprintf(buf, "HTTP/1.0 %s\r\n"
-			     "Date: %s\r\n"
-			     "Server: SWS\r\n"
-			     "Content-Type: text/html\r\n"
-			     "\r\n", status, timestr);
+	sprintf(buf, "HTTP/1.0 %s\r\n"
+		     "Date: %s\r\n"
+		     "Server: SWS\r\n"
+		     "Content-Type: text/html\r\n"
+		     "\r\n", http_status, timestr);
 
-		write(sock, buf, strlen(buf));
-	} else {
-		sprintf(buf, "HTTP/1.0 %s\r\n"
-			     "\r\n", status);
-		write(sock, buf, strlen(buf));
-	}
+	write(sock, buf, strlen(buf));
+
+	if (request.path != NULL)
+		free(request.path);
 }
 
 /*
- * Function to retrieve a single line from a socket.
- * Reads characters one by one into the passed buffer.
- * Returns the number of characters read (not including
- * null terminator) or -1 on error.
+ * Function to retrieve a single line from a socket. Reads characters one
+ * by one into the passed buffer. Returns the number of characters read
+ * (not including null terminator) or -1 on error.
  */
 int
 sws_get_line(int sock, char *buf, int len) {
@@ -369,15 +362,13 @@ sws_parse_method(struct request *req, char *buf) {
 	}
 
 	/* Push buf pointer past method */
-	for (;i > 0; i--)
-		buf++;
+	for (;i > 0; i--, buf++);
 
 	/* Skip whitespace */
-	while (*buf != ' ')
-		buf++;
+	for (;*buf == ' '; buf++);
 
 	/* Parse path */
-	if (*buf != '/') {
+	if (*buf != '/' && *buf != '~') {
 		http_status = STATUS_400;
 		return -1;
 	}
@@ -387,19 +378,28 @@ sws_parse_method(struct request *req, char *buf) {
 	 * about is loading the path string into the request object --
 	 * we'll deal with stat-ing the file later.
 	 */
-	for (i = 0; i < sizeof(buf); i++)
-		if (buf[i] == ' ')
+	for (i = 0; i < strlen(buf); i++)
+		if (buf[i] == ' ' || buf[i] == '\r')
 			break;
 
-	tmp = malloc(i);
-	for (;i > 0; i--) {
-		*tmp++ = *buf++;
+	if ((tmp = malloc(i+1)) == NULL) {
+		fprintf(stderr, "malloc error\n");
+		exit(EXIT_FAILURE);
 	}
+
+	fprintf(stderr, "i=%d\n", i);
+
+	strncpy(tmp, buf, i);
+	tmp[i] = '\0';
 	req->path = tmp;
 
-	/* Skip more whitespace */
-	while (*buf != ' ')
+	for(;i > 0; i--) {
+		fprintf(stderr, "%d\n", (int)(*buf));
 		buf++;
+	}
+
+	/* Skip more whitespace */
+	for (;*buf == ' '; buf++);
 
 	/* Get protocol */
 	if ((strncmp(buf, CRLF, 2) == 0) && req->method == 0) {
@@ -413,6 +413,8 @@ sws_parse_method(struct request *req, char *buf) {
 		http_status = STATUS_400;
 		return -1;
 	}
+
+	fprintf(stderr, "%d\n", req->simple);
 
 	return 0;
 }
