@@ -48,25 +48,18 @@ mainloop() {
 	char buf[1024];
 
 	/* Set port */
-	if (opts.port) {
-		if (!ipv6) {
-			if (!(sws.sin_port = htons(opts.port))) {
-				fprintf(stderr, "Invalid port\n");
-				exit(EXIT_FAILURE);
-				/* NOTREACHED */
-			}
-		} else {
-			if (!(sws6.sin6_port = htons(opts.port))) {
-				fprintf(stderr, "Invalid port\n");
-				exit(EXIT_FAILURE);
-				/* NOTREACHED */
-			}
+	if (!ipv6) {
+		if (!(sws.sin_port = htons(opts.port))) {
+			fprintf(stderr, "Invalid port\n");
+			exit(EXIT_FAILURE);
+			/* NOTREACHED */
 		}
 	} else {
-		if (!ipv6)
-			sws.sin_port = htons(8080);
-		else
-			sws6.sin6_port = htons(8080);
+		if (!(sws6.sin6_port = htons(opts.port))) {
+			fprintf(stderr, "Invalid port\n");
+			exit(EXIT_FAILURE);
+			/* NOTREACHED */
+		}
 	}
 
 	/* Set domain */
@@ -186,6 +179,7 @@ main(int argc, char **argv) {
 	char flag;
 	extern char *optarg;
 
+	opts.port = 8080;
 	while((flag = getopt(argc, argv, "6c:dhi:k:l:p:s:")) != -1) {
 		switch(flag) {
 		case '6':

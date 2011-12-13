@@ -14,6 +14,13 @@ struct swsopts {
 	char *key;
 } opts;
 
+struct request {
+	int method;
+	int simple;
+	char *path;
+	char *if_mod_since;
+} request;
+
 /* Passed a struct swsopts, this function initializes the internal
  * variables used by the SWS library.  Furthermore, this function performs
  * whatever other initialization tasks are necessary.  This includes (but
@@ -32,5 +39,9 @@ void sws_log(const char *);
 void sws_request(const int);
 
 char* sws_process_request(const char*);
+
+int sws_get_line(int, char*, int);
+
+int sws_parse_method(struct request*, char*);
 
 #endif /* _SWS_H_ */

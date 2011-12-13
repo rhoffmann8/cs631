@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -34,6 +35,9 @@
 #define STATUS_502 "502 Bad Gateway"
 #define STATUS_503 "503 Service Unavailable"
 
+#define CRLF "\r\n"
+#define REQUEST_END "\r\n\r\n"
+
 char *__sws_cgidir;
 char *__sws_dir;
 int __sws_debug = 0;
@@ -46,6 +50,15 @@ char *__sws_key;
 DIR *dir_dp;
 DIR *secdir_dp;
 int logfile_fd;
+
+/*
+ * Like errno, http_status is a global error container.
+ * At any point where the status could be != 200 OK,
+ * http_status is checked. If it does not start with a
+ * '2', the response header indicating the status is
+ * created and sent, and the connection is closed.
+ */
+char *http_status;
 
 void
 sws_init(const struct swsopts opts) {
@@ -192,9 +205,11 @@ sws_request(const int sock) {
 
 	socklen_t length;
 	time_t now;
+	struct request request;
 	struct sockaddr_storage client;
 	char ipstr[INET6_ADDRSTRLEN];
 	char buf[BUFF_SIZE];
+	char request_buf[BUFF_SIZE];
 	char timestr[50];
 	char *status;
 	int port, rval;
@@ -203,95 +218,201 @@ sws_request(const int sock) {
 	bzero(ipstr, INET6_ADDRSTRLEN);
 	length = sizeof(client);
 
-	if (__sws_debug) {
-		if (getpeername(sock, (struct sockaddr *)&client, &length) == -1) {
-			fprintf(stderr, "Unable to get socket name: %s\n",
-					strerror(errno));
+	if (getpeername(sock, (struct sockaddr *)&client, &length) == -1) {
+		fprintf(stderr, "Unable to get socket name: %s\n",
+				strerror(errno));
+		return;
+	}
+
+	if (client.ss_family == AF_INET) {
+		struct sockaddr_in *s = (struct sockaddr_in *)&client;
+		port = ntohs(s->sin_port);
+		if (!inet_ntop(AF_INET, &s->sin_addr, ipstr, sizeof(ipstr))) {
+			fprintf(stderr,"inet_ntop error: %s\n", strerror(errno));
 			return;
 		}
-
-		if (client.ss_family == AF_INET) {
-			struct sockaddr_in *s = (struct sockaddr_in *)&client;
-			port = ntohs(s->sin_port);
-			if (!inet_ntop(AF_INET, &s->sin_addr, ipstr, sizeof(ipstr))) {
-				fprintf(stderr,"inet_ntop error: %s\n", strerror(errno));
-				return;
-			}
-		} else { // AF_INET6
-			struct sockaddr_in6 *s = (struct sockaddr_in6 *)&client;
-			port = ntohs(s->sin6_port);
-			if (!inet_ntop(AF_INET6, &s->sin6_addr, ipstr, sizeof(ipstr))) {
-				fprintf(stderr,"inet_ntop error: %s\n", strerror(errno));
-				return;
-			}
+	} else { // AF_INET6
+		struct sockaddr_in6 *s = (struct sockaddr_in6 *)&client;
+		port = ntohs(s->sin6_port);
+		if (!inet_ntop(AF_INET6, &s->sin6_addr, ipstr, sizeof(ipstr))) {
+			fprintf(stderr,"inet_ntop error: %s\n", strerror(errno));
+			return;
 		}
+	}
 
-		fprintf(stderr, "Connection from %s remote port %d\n",
-				ipstr, port);
+	fprintf(stderr, "Connection from %s remote port %d\n",
+			ipstr, port);
 
-		/* Read from socket */
-		if ((rval = recv(sock, buf, BUFF_SIZE, 0)) < 0) {
+	/* Begin with 200 OK as HTTP status code. */
+	http_status = STATUS_200;
+
+	bzero(buf, sizeof(buf));
+
+	/* Get method/path/protocol  */
+	if ((rval = sws_get_line(sock, buf, BUFF_SIZE)) < 0) {
+		perror("recv");
+		return;
+	}
+
+	if (sws_parse_method(&request, buf) < 0) {
+		//respond with error status
+	}
+
+	/*
+	 * If simple request (HTTP/0.9), skip headers and respond
+	 * with entity body only.
+	 */
+	if (request.simple) {
+		//call file function & respond
+		return;
+	}
+
+	/* Get headers */
+	do {
+		bzero(buf, sizeof(buf));
+		if ((rval = sws_get_line(sock, buf, BUFF_SIZE)) < 0) {
 			perror("recv");
 			return;
 		}
 		else if (rval == 0) {
-			fprintf(stderr, "failure reading browser request\n");
+			fprintf(stderr, "Connection closed by client\n");
 			return;
 		}
-		else if (rval > 0 && rval < BUFF_SIZE) {
-			buf[rval] = '\0';
-		}
+		/* Read until two instances of CRLF at the end */
+	} while (!((strlen(buf) == 2) && (strcmp(buf, CRLF) == 0)));
 
+	now = time(NULL);
+	strftime(timestr, sizeof(timestr),
+		"%a, %e %b %Y %T %Z", gmtime(&now));
 
-		now = time(NULL);
+	if (!strcmp((status = sws_process_request(request_buf)), STATUS_200)) {
+		sprintf(buf, "HTTP/1.0 %s\r\n"
+			     "Date: %s\r\n"
+			     "Server: SWS\r\n"
+			     "Content-Type: text/html\r\n"
+			     "\r\n", status, timestr);
 
-		strftime(timestr, sizeof(timestr),
-			"%a, %e %b %Y %T %Z", gmtime(&now));
-
-		if (!strcmp((status = sws_process_request(buf)), STATUS_200)) {
-			sprintf(buf, "HTTP/1.0 %s\r\n"
-				     "Date: %s\r\n"
-				     "Server: SWS\r\n"
-				     "Content-Type: text/html\r\n"
-				     "\r\n", status, timestr);
-
-			write(sock, buf, strlen(buf));
-		} else {
-			sprintf(buf, "HTTP/1.0 %s\r\n"
-				     "\r\n", status);
-			write(sock, buf, strlen(buf));
-		}
+		write(sock, buf, strlen(buf));
+	} else {
+		sprintf(buf, "HTTP/1.0 %s\r\n"
+			     "\r\n", status);
+		write(sock, buf, strlen(buf));
 	}
 }
 
-/* change to get_status_code? */
-char*
-sws_process_request(const char *request) {
+/*
+ * Function to retrieve a single line from a socket.
+ * Reads characters one by one into the passed buffer.
+ * Returns the number of characters read (not including
+ * null terminator) or -1 on error.
+ */
+int
+sws_get_line(int sock, char *buf, int len) {
 
-	int path_len;// request_type;
-	if (!strncmp(request, "GET ", 4)) {
-		//request_type = 1;
-		request += 4;
-	/*} else if (!strncmp(request, "HEAD", 4)) {
-		request_type = 2;
-		request += 5;
-	} else if (!strncmp(request, "POST", 4)) {
-		request_type = 3;
-		request += 5;
-	*/
+	int i, n;
+	char c;
+
+	i = 0;
+	for (; i < len - 1;) {
+		/* Read a byte from socket */
+		if ((n = recv(sock, &c, 1, 0)) < 0)
+			return -1;
+		if (n > 0) {
+			if (c == '\r') {
+				buf[i] = c;
+				i++;
+				/* If a carriage return, check for newline */
+				if ((n = recv(sock, &c, 1, MSG_PEEK)) < 0)
+					return -1;
+				/* If char is a newline, read it */
+				if ((n > 0) && (c == '\n')) {
+					if (recv(sock, &c, 1, 0) < 0)
+						return -1;
+				} else {
+				/* If not, insert a newline */
+					c = '\n';
+				}
+			}
+			buf[i] = c;
+			i++;
+			if(c == '\n') {
+				break;
+			}
+		}
+		else
+			break;
+	}
+	buf[i] = '\0';
+
+	return i;
+}
+
+int
+sws_parse_method(struct request *req, char *buf) {
+
+	int i;
+	char *tmp;
+
+	/* Check method */
+	if (strncmp("GET", buf, 3) == 0) {
+		i = 3;
+		req->method = 0;
+	} else if (strncmp("HEAD", buf, 4) == 0) {
+		i = 4;
+		req->method = 1;
+	} else if (strncmp("POST", buf, 4) == 0) {
+		i = 4;
+		req->method = 2;
 	} else {
-		return STATUS_400;
+		http_status = STATUS_501;
+		return -1;
 	}
 
-	for (path_len = 0; request[path_len] != ' '; path_len++)
-		if (request[path_len] == '\r')
-			return STATUS_400;
+	/* Push buf pointer past method */
+	for (;i > 0; i--)
+		buf++;
 
-	if (path_len == 1) {
-		//Root was requested
+	/* Skip whitespace */
+	while (*buf != ' ')
+		buf++;
 
-	} else {
-		//path is request[0] to request[path_len]
+	/* Parse path */
+	if (*buf != '/') {
+		http_status = STATUS_400;
+		return -1;
 	}
-	return STATUS_200;
+
+	/*
+	 * Get the length of the path requested. Right now all we care
+	 * about is loading the path string into the request object --
+	 * we'll deal with stat-ing the file later.
+	 */
+	for (i = 0; i < sizeof(buf); i++)
+		if (buf[i] == ' ')
+			break;
+
+	tmp = malloc(i);
+	for (;i > 0; i--) {
+		*tmp++ = *buf++;
+	}
+	req->path = tmp;
+
+	/* Skip more whitespace */
+	while (*buf != ' ')
+		buf++;
+
+	/* Get protocol */
+	if ((strncmp(buf, CRLF, 2) == 0) && req->method == 0) {
+		/*HTTP 0.9 Simple-Request */
+		req->simple = 1;
+	} else if (strncmp(buf, "HTTP/1.0", 8) == 0) {
+		/* HTTP 1.0 Full-Request */
+		req->simple = 0;
+	} else {
+		/* Invalid request */
+		http_status = STATUS_400;
+		return -1;
+	}
+
+	return 0;
 }
