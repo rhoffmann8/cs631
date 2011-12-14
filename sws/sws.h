@@ -19,6 +19,7 @@ struct request {
 	int simple;
 	char *path;
 	char *if_mod_since;
+	char *date_format;
 } request;
 
 /* Passed a struct swsopts, this function initializes the internal
@@ -41,5 +42,9 @@ void sws_request(const int);
 int sws_get_line(int, char*, int);
 
 int sws_parse_method(struct request*, char*);
+
+int sws_parse_header(struct request*, char*);
+
+int sws_serve_file(struct request*);
 
 #endif /* _SWS_H_ */

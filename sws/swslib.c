@@ -1,3 +1,4 @@
+#define _XOPEN_SOURCE
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -7,6 +8,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <features.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +36,10 @@
 #define STATUS_501 "501 Not Implemented"
 #define STATUS_502 "502 Bad Gateway"
 #define STATUS_503 "503 Service Unavailable"
+
+#define RFC1123_DATE "%a, %d %b %Y %T GMT"
+#define RFC850_DATE "%A, %d-%b-%y %T GMT"
+#define ASCTIME_DATE "%a %b %e %T %Y"
 
 #define CRLF "\r\n"
 
@@ -166,7 +172,7 @@ sws_init(const struct swsopts opts) {
 		}
 	}
 
-	/* Open file descriptors */
+	/* Open file descriptors (why?) */
 	if ((dir_dp = opendir(__sws_dir)) == NULL) {
 		perror("opening serve directory");
 		exit(EXIT_FAILURE);
@@ -247,7 +253,7 @@ sws_request(const int sock) {
 
 	/* Get method/path/protocol  */
 	if ((rval = sws_get_line(sock, buf, BUFF_SIZE)) < 0) {
-		perror("recv");
+		//construct & send error status
 		return;
 	}
 
@@ -264,19 +270,34 @@ sws_request(const int sock) {
 		return;
 	}
 
-	/* Get headers */
-	do {
+	fprintf(stderr, "parsing headers\n");
+
+	/* Get headers, read until CRLF */
+	//TODO: SIGALRM
+	while (1) {
 		bzero(buf, sizeof(buf));
 		if ((rval = sws_get_line(sock, buf, BUFF_SIZE)) < 0) {
-			perror("recv");
+			//send error
 			return;
-		}
-		else if (rval == 0) {
+		} else if (rval == 0) {
 			fprintf(stderr, "Connection closed by client\n");
 			return;
+		} else if ((strlen(buf) == 2) &&
+				(strcmp(buf, CRLF) == 0)) {
+			break;
+		} else {
+			if (sws_parse_header(&request, buf) < 0) {
+				//send error
+				return;
+			}
 		}
-		/* Read until line containing only CRLF */
-	} while (!((strlen(buf) == 2) && (strcmp(buf, CRLF) == 0)));
+	}
+
+	/* Request has been validated, attempt to serve file */
+	if (sws_serve_file(&request) < 0) {
+		//send error
+		return;
+	}
 
 	now = time(NULL);
 	strftime(timestr, sizeof(timestr),
@@ -290,8 +311,11 @@ sws_request(const int sock) {
 
 	write(sock, buf, strlen(buf));
 
+	/* Free memory allocated in struct request */
 	if (request.path != NULL)
 		free(request.path);
+	if (request.if_mod_since != NULL)
+		free(request.if_mod_since);
 }
 
 /*
@@ -308,22 +332,32 @@ sws_get_line(int sock, char *buf, int len) {
 	i = 0;
 	for (; i < len - 1;) {
 		/* Read a byte from socket */
-		if ((n = recv(sock, &c, 1, 0)) < 0)
+		if ((n = recv(sock, &c, 1, 0)) < 0) {
+			perror("recv");
+			http_status = STATUS_500;
 			return -1;
+		}
 		if (n > 0) {
 			if (c == '\r') {
 				buf[i] = c;
 				i++;
 				/* If a carriage return, check for newline */
-				if ((n = recv(sock, &c, 1, MSG_PEEK)) < 0)
+				if ((n = recv(sock, &c, 1, MSG_PEEK)) < 0) {
+					perror("recv");
+					http_status = STATUS_500;
 					return -1;
+				}
 				/* If char is a newline, read it */
 				if ((n > 0) && (c == '\n')) {
-					if (recv(sock, &c, 1, 0) < 0)
+					if (recv(sock, &c, 1, 0) < 0) {
+						perror("recv");
+						http_status = STATUS_500;
 						return -1;
+					}
 				} else {
-				/* If not, insert a newline */
-					c = '\n';
+				/* If not, return bad request */
+					http_status = STATUS_400;
+					return -1;
 				}
 			}
 			buf[i] = c;
@@ -368,7 +402,7 @@ sws_parse_method(struct request *req, char *buf) {
 	for (;*buf == ' '; buf++);
 
 	/* Parse path */
-	if (*buf != '/' && *buf != '~') {
+	if (*buf != '/') {
 		http_status = STATUS_400;
 		return -1;
 	}
@@ -384,19 +418,16 @@ sws_parse_method(struct request *req, char *buf) {
 
 	if ((tmp = malloc(i+1)) == NULL) {
 		fprintf(stderr, "malloc error\n");
-		exit(EXIT_FAILURE);
+		http_status = STATUS_500;
+		return -1;
 	}
-
-	fprintf(stderr, "i=%d\n", i);
 
 	strncpy(tmp, buf, i);
 	tmp[i] = '\0';
 	req->path = tmp;
 
-	for(;i > 0; i--) {
-		fprintf(stderr, "%d\n", (int)(*buf));
+	for(;i > 0; i--)
 		buf++;
-	}
 
 	/* Skip more whitespace */
 	for (;*buf == ' '; buf++);
@@ -414,7 +445,176 @@ sws_parse_method(struct request *req, char *buf) {
 		return -1;
 	}
 
-	fprintf(stderr, "%d\n", req->simple);
+	return 0;
+}
+
+int
+sws_parse_header(struct request *req, char *buf) {
+
+	struct tm tm;
+	int i;
+	char *tmp;
+
+	if (strchr(buf, ':') == NULL) {
+		http_status = STATUS_400;
+		return -1;
+	}
+
+	/* Trim leading whitespace */
+	for (;*buf == ' '; buf++);
+
+	/* Get length of header name */
+	for (i = 0; buf[i] != ':'; i++);
+
+	/* Only important header is If-Modified-Since */
+	if (strncmp(buf, "If-Modified-Since", i) == 0) {
+
+		/* Iterate over header name */
+		for (; i > 0; i--, buf++);
+
+		/*
+		 * Next 2 characters must be ':' and SP.
+		 * (RFC 1945, Sec 4.2)
+		 */
+		if (*buf != ':' && (*(buf+1) != ' ')) {
+			http_status = STATUS_400;
+			return -1;
+		}
+		buf += 2;
+
+		/* Retrieve field value */
+		if ((tmp = malloc(strlen(buf))) == NULL) {
+			fprintf(stderr, "malloc error\n");
+			http_status = STATUS_500;
+			return -1;
+		}
+		strncpy(tmp, buf, strlen(buf));
+
+		/* Trim whitespace and CRLF from end */
+		for (i = strlen(tmp)-3; tmp[i] == ' '; i--);
+		tmp[i+1] = '\0';
+		req->if_mod_since = tmp;
+
+		/* Get date format, if valid */
+		if (strptime(tmp, RFC1123_DATE, &tm) != NULL)
+			req->date_format = RFC1123_DATE;
+		else if (strptime(tmp, RFC850_DATE, &tm) != NULL)
+			req->date_format = RFC850_DATE;
+		else if (strptime(tmp, ASCTIME_DATE, &tm) != NULL)
+			req->date_format = ASCTIME_DATE;
+		else
+			req->date_format = NULL;
+	}
+
+	return 0;
+}
+
+int
+sws_serve_file(struct request* req) {
+
+	struct stat buf;
+	int i, len;
+	char *abs_path, *tmp;
+
+	/*
+	 * Check if requested path is inside root/user dir -- ideally
+	 * chroot would be here but it is not possible on linuxlab.
+	 */
+	tmp = req->path;
+
+	i = 0;
+	/* If request is a user's dir, skip the first slash */
+	if (tmp[1] == '~') {
+		tmp++;
+
+		/*
+		 * If the user's directory root was requested without
+		 * a trailing slash, increment i so it will pass
+		 * the verification later.
+		 */
+		if (strchr(tmp, '/') == NULL)
+			i++;
+	}
+
+	while (*tmp != '\0') {
+
+		/*
+		 * If we find a slash (that is not part of
+		 * multiple slashes), increment i
+		 */
+		if ((*tmp == '/') && (*(tmp-1) != '/')) {
+			i++;
+			tmp++;
+		}
+		/*
+		 * If we find a parent dir traversal sequence,
+		 * decrement i
+		 */
+		else if (strncmp(tmp, "../", 3) == 0) {
+			i--;
+			tmp += 3;
+		}
+		/* For all other characters, do nothing */
+		else {
+			tmp++;
+		}
+	}
+
+	/* If i is not >= 1, we are outside the root */
+	if (i < 1) {
+		http_status = STATUS_403;
+		return -1;
+	}
+
+	tmp = req->path;
+	/* If user's web directory, get the length of user string */
+	if (tmp[1] == '~') {
+		tmp += 2;
+		if (strchr(tmp, '/') != NULL)
+			for (i = 0; *tmp != '/'; i++, tmp++);
+		else
+			i = strlen(tmp);
+		len = strlen("/home/") + i + strlen("/sws");
+	} else {
+		len = strlen(__sws_dir);
+	}
+
+	/* Construct absolute path to requested file/directory */
+	if ((abs_path = malloc(len +
+		(strlen(req->path) - i - 2) + 1)) == NULL) {
+		fprintf(stderr, "malloc error\n");
+		http_status = STATUS_500;
+		return -1;
+	}
+
+	if (req->path[1] == '~') {
+		tmp = req->path + 2;
+		strncpy(abs_path, "/home/", 6);
+		strncat(abs_path, tmp, i);
+		for (; i > 0; tmp++, i--);
+		strncat(abs_path, "/sws", 4);
+		strncat(abs_path, tmp, strlen(tmp));
+	} else {
+		strncpy(abs_path, __sws_dir, strlen(__sws_dir));
+		strncat(abs_path, req->path, strlen(req->path));
+	}
+
+	fprintf(stderr, "%s\n", abs_path);
+
+	/* Stat the file */
+	if (stat(abs_path, &buf) < 0) {
+		if (errno == EACCES)
+			http_status = STATUS_403;
+		else if (errno == ENOENT || errno == ENOTDIR)
+			http_status = STATUS_404;
+		else
+			http_status = STATUS_501;
+		perror("stat");
+		return -1;
+	}
+
+	if (abs_path != NULL)
+		free(abs_path);
 
 	return 0;
 }
