@@ -45,6 +45,8 @@ int sws_parse_method(struct request*, char*);
 
 int sws_parse_header(struct request*, char*);
 
-int sws_serve_file(struct request*);
+int sws_serve_file(struct request*, int);
+
+int sws_response_header(int, int);
 
 #endif /* _SWS_H_ */
