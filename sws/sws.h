@@ -22,6 +22,12 @@ struct request {
 	char *date_format;
 } request;
 
+struct response {
+	unsigned long length;
+	char *last_modified;
+	char *content_type;
+} response;
+
 /* Passed a struct swsopts, this function initializes the internal
  * variables used by the SWS library.  Furthermore, this function performs
  * whatever other initialization tasks are necessary.  This includes (but
@@ -45,8 +51,12 @@ int sws_parse_method(struct request*, char*);
 
 int sws_parse_header(struct request*, char*);
 
-int sws_serve_file(struct request*, int);
+int sws_serve_file(int, struct request*);
 
-int sws_response_header(int, int);
+int sws_response_header(int, struct response*);
+
+int sws_execute_cgi(int, struct request*);
+
+int sws_create_index(int, struct response*, char*);
 
 #endif /* _SWS_H_ */

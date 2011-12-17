@@ -1,9 +1,12 @@
 #define _XOPEN_SOURCE
+#define _SVID_SOURCE
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 
 #include <errno.h>
 #include <dirent.h>
@@ -18,31 +21,31 @@
 #include <unistd.h>
 
 #include "sws.h"
+#include "utils.h"
 
 #define LOGFILE "sws.log"
 #define BUFF_SIZE 8096
 
 #define STATUS_200 "200 OK"
-#define STATUS_201 "201 Created"
-#define STATUS_202 "202 Accepted"
-#define STATUS_204 "204 No Content"
 #define STATUS_301 "301 Moved Permanently"
 #define STATUS_302 "302 Moved Temporarily"
 #define STATUS_304 "304 Not Modified"
 #define STATUS_400 "400 Bad Request"
-#define STATUS_401 "401 Unauthorized"
 #define STATUS_403 "403 Forbidden"
 #define STATUS_404 "404 Not Found"
 #define STATUS_500 "500 Internal Server Error"
 #define STATUS_501 "501 Not Implemented"
-#define STATUS_502 "502 Bad Gateway"
-#define STATUS_503 "503 Service Unavailable"
 
 #define RFC1123_DATE "%a, %d %b %Y %T GMT"
 #define RFC850_DATE "%A, %d-%b-%y %T GMT"
 #define ASCTIME_DATE "%a %b %e %T %Y"
 
+#define TEXT_HTML "text/html"
+#define X_BLOWFISH "x-blowfish"
+
 #define CRLF "\r\n"
+
+#define TIMEOUT_SECS 60
 
 char *__sws_cgidir;
 char *__sws_dir;
@@ -66,58 +69,11 @@ int logfile_fd;
  */
 char *http_status;
 
-/*
- * Function to check if a file/dir is in a given directory.
- * type is 0 to look for file, 1 for directory
- */
-int
-file_in_dir(DIR *dp, ino_t root_ino, ino_t needle_ino, char *dirname, int type) {
-
-	DIR *dp2;
-	struct dirent *dir;
-	struct stat stat_buf;
-	int ret;
-	char tmp[PATH_MAX];
-
-	while ((dir = readdir(dp)) != NULL) {
-		if (strcmp(dir->d_name, ".") != 0 &&
-			strcmp(dir->d_name, "..") != 0) {
-
-			bzero(tmp, sizeof(tmp));
-
-			strncpy(tmp, dirname, strlen(dirname));
-			strncat(tmp, "/", 1);
-			strncat(tmp, dir->d_name, strlen(dir->d_name));
-
-			if (stat(tmp, &stat_buf) < 0) {
-				perror("stat");
-				return -1;
-			}
-			if (type == 1 && S_ISDIR(stat_buf.st_mode)) {
-				if (dir->d_ino == needle_ino)
-					return 1;
-				if (dir->d_ino == root_ino)
-					return 0;
-				if ((dp2 = opendir(tmp)) < 0) {
-					perror("opendir");
-					return -1;
-				}
-				ret = file_in_dir(dp2, root_ino, needle_ino,
-					tmp, type);
-				if (closedir(dp2) < 0) {
-					perror("closedir");
-					return -1;
-				}
-				if (ret == 1 || ret == -1)
-					return ret;
-			} else if (type == 0 && S_ISREG(stat_buf.st_mode)) {
-				if(dir->d_ino == needle_ino)
-					return 1;
-			}
-		}
-	}
-
-	return 0;
+void
+timeout(int sig) {
+	if (sig == SIGALRM)
+		//connection timed out, exit
+		exit(EXIT_FAILURE);
 }
 
 void
@@ -136,9 +92,12 @@ sws_init(const struct swsopts opts) {
 	__sws_port = opts.port;
 	__sws_secdir = opts.secdir;
 	__sws_key = opts.key;
-
-	/* So we don't segfault later */
 	tmppath = NULL;
+
+	while (__sws_dir[strlen(__sws_dir)-1] == '/') {
+		fprintf(stderr, "inloop\n");
+		__sws_dir[strlen(__sws_dir)-1] = '\0';
+	}
 
 	/* Stat http directory */
 	if (stat(__sws_dir, &stat_buf) < 0) {
@@ -268,12 +227,7 @@ sws_init(const struct swsopts opts) {
 		}
 	}
 
-	/* Open file descriptors (why?) */
-	/*if ((dir_dp = opendir(__sws_dir)) == NULL) {
-		perror("opening serve directory");
-		exit(EXIT_FAILURE);
-	}*/
-
+	/* Open logfile if -l */
 	if (__sws_logfile) {
 		if ((logfile_fd = open(__sws_logfile, O_APPEND | O_CREAT | O_RDWR,
 			S_IRUSR | S_IWUSR | S_IRGRP)) < 0) {
@@ -282,13 +236,6 @@ sws_init(const struct swsopts opts) {
 			/* NOTREACHED */
 		}
 	}
-
-	/*if (__sws_secdir && __sws_key) {
-		if ((secdir_dp = opendir(__sws_secdir)) == NULL) {
-			perror("opening secure directory");
-			exit(EXIT_FAILURE);
-		}
-	}*/
 
 	if (tmppath != NULL)
 		free(tmppath);
@@ -304,11 +251,22 @@ sws_request(const int sock) {
 
 	socklen_t length;
 	struct request request;
+	struct response resp;
+	struct stat stat_buf;
 	struct sockaddr_storage client;
+	ino_t cgi_ino, path_ino;
+	int port, rval;
+	int n;
+	char *full_path;
 	char ipstr[INET6_ADDRSTRLEN];
 	char buf[BUFF_SIZE];
-	int port, rval;
 
+	request.path = NULL;
+	request.if_mod_since = NULL;
+	resp.length = 0;
+	resp.content_type = NULL;
+
+	full_path = NULL;
 	bzero(&client, sizeof(struct sockaddr_storage));
 	bzero(ipstr, INET6_ADDRSTRLEN);
 	length = sizeof(client);
@@ -343,14 +301,24 @@ sws_request(const int sock) {
 
 	bzero(buf, sizeof(buf));
 
+	signal(SIGALRM, timeout);
+	alarm(TIMEOUT_SECS);
+
 	/* Get method/path/protocol  */
 	if ((rval = sws_get_line(sock, buf, BUFF_SIZE)) < 0) {
-		//construct & send error status
+		sws_response_header(sock, &resp);
+		return;
+	}
+	if (rval == 0) {
+		//send head response
+		/* Close connection */
 		return;
 	}
 
 	if (sws_parse_method(&request, buf) < 0) {
 		//respond with error status
+		sws_response_header(sock, &resp);
+		return;
 	}
 
 	/*
@@ -362,10 +330,7 @@ sws_request(const int sock) {
 		return;
 	}
 
-	fprintf(stderr, "parsing headers\n");
-
 	/* Get headers, read until CRLF */
-	//TODO: SIGALRM
 	while (1) {
 		bzero(buf, sizeof(buf));
 		if ((rval = sws_get_line(sock, buf, BUFF_SIZE)) < 0) {
@@ -385,19 +350,87 @@ sws_request(const int sock) {
 		}
 	}
 
-	//stat file requested, get ino (or do nothing if no exist)
-	//get ino of cgidir and do file_in_dir with that as root to see
-	//if file is in cgi folder
-
-	/* Request has been validated, attempt to serve file */
-	if (sws_serve_file(&request, sock) < 0) {
-		//send error
-		return;
+	if ((n = sws_file_path(__sws_dir, request.path, &full_path)) < 0) {
+		if (n == -1) {
+			http_status = STATUS_404;
+			sws_response_header(sock, &resp);
+			return;
+		} else {
+			http_status = STATUS_500;
+			//send error
+			return;
+		}
 	}
 
+	free(request.path);
+	request.path = full_path;
+
+	/* Check for CGI request */
+
+	if (__sws_cgidir) {
+		/* Get inodes of request path and cgidir */
+		if (stat(full_path, &stat_buf) < 0) {
+			perror("can't stat request path");
+			if (errno == ENOENT || errno == ENOTDIR)
+				http_status = STATUS_404;
+			else
+				http_status = STATUS_500;
+			//send error
+			return;
+		}
+		path_ino = stat_buf.st_ino;
+
+		//free(full_path);
+		//full_path = NULL;
+
+		if (stat(__sws_cgidir, &stat_buf) < 0) {
+			perror("can't stat cgidir");
+			http_status = STATUS_500;
+			//send error
+			return;
+		}
+		cgi_ino = stat_buf.st_ino;
+
+		if ((dir_dp = opendir(__sws_cgidir)) == NULL) {
+			perror("opendir");
+			http_status = STATUS_500;
+			//send error
+			return;
+		}
+
+		/* Check if requested file is in cgidir */
+		if ((rval = file_in_dir(dir_dp, cgi_ino,
+			path_ino, __sws_cgidir, 0)) < 0) {
+			//send error
+			return;
+		}
+
+		if (closedir(dir_dp) < 0) {
+			perror("closedir");
+			//send error
+			return;
+		}
+	} else
+		rval = 0;
+
+	if (rval == 0) {
+		//file not in cgidir, serve it normally
+		if (sws_serve_file(sock, &request) < 0) {
+			//send error
+			sws_response_header(sock, &resp);
+			return;
+		}
+	} else {
+		//file in cgidir, execute it
+		fprintf(stderr, "cgi request\n");
+		sws_execute_cgi(sock, &request);
+	}
+	if (full_path != NULL)
+		free(full_path);
+
 	/* Free memory allocated in struct request */
-	if (request.path != NULL)
-		free(request.path);
+	//if (request.path != NULL)
+	//	free(request.path);
 	if (request.if_mod_since != NULL)
 		free(request.if_mod_since);
 }
@@ -520,7 +553,7 @@ sws_parse_method(struct request *req, char *buf) {
 	if ((strncmp(buf, CRLF, 2) == 0) && req->method == 0) {
 		/*HTTP 0.9 Simple-Request */
 		req->simple = 1;
-	} else if (strncmp(buf, "HTTP/1.0", 8) == 0) {
+	} else if (strncmp(buf, "HTTP/1.1", 8) == 0) {
 		/* HTTP 1.0 Full-Request */
 		req->simple = 0;
 	} else {
@@ -594,98 +627,27 @@ sws_parse_header(struct request *req, char *buf) {
 }
 
 int
-sws_serve_file(struct request* req, int sock) {
+sws_serve_file(int sock, struct request* req) {
 
+	struct response resp;
 	struct stat stat_buf;
-	int i, len, n;
-	int fd;
-	char *full_path, *tmp;
+	int fd, n;
+	char *full_path;
+	char last_mod[50];
 	char buf[BUFF_SIZE];
 
 	/*
 	 * Check if requested path is inside root/user dir -- ideally
 	 * chroot would be here but it is not possible on linuxlab.
 	 */
-	tmp = req->path;
-
-	i = 0;
-	/* If request is a user's dir, skip the first slash */
-	if (tmp[1] == '~') {
-		tmp++;
-
-		/*
-		 * If the user's directory root was requested without
-		 * a trailing slash, increment i so it will pass
-		 * the verification later.
-		 */
-		if (strchr(tmp, '/') == NULL)
-			i++;
-	}
-
-	while (*tmp != '\0') {
-
-		/*
-		 * If we find a slash (that is not part of
-		 * multiple slashes), increment i
-		 */
-		if ((*tmp == '/') && (*(tmp-1) != '/')) {
-			i++;
-			tmp++;
-		}
-		/*
-		 * If we find a parent dir traversal sequence,
-		 * decrement i
-		 */
-		else if (strncmp(tmp, "../", 3) == 0) {
-			i--;
-			tmp += 3;
-		}
-		/* For all other characters, do nothing */
-		else {
-			tmp++;
-		}
-	}
-
-	/* If i is not >= 1, we are outside the root */
-	if (i < 1) {
+	if ((n = file_in_root(req->path)) == 0) {
 		http_status = STATUS_403;
 		return -1;
-	}
-
-	tmp = req->path;
-	/* If user's web directory, get the length of user string */
-	if (tmp[1] == '~') {
-		tmp += 2;
-		if (strchr(tmp, '/') != NULL)
-			for (i = 0; *tmp != '/'; i++, tmp++);
-		else
-			i = strlen(tmp);
-		len = strlen("/home/") + i + strlen("/sws");
-	} else {
-		len = strlen(__sws_dir);
-	}
-
-	/* Construct full path to requested file/directory */
-	if ((full_path = malloc(len +
-		(strlen(req->path) - i - 2) + 1)) == NULL) {
-		fprintf(stderr, "malloc error\n");
+	} else if (n == -1) {
 		http_status = STATUS_500;
 		return -1;
 	}
-
-	if (req->path[1] == '~') {
-		tmp = req->path + 2;
-		strncpy(full_path, "/home/", 6);
-		strncat(full_path, tmp, i);
-		for (; i > 0; tmp++, i--);
-		strncat(full_path, "/sws/", 5);
-		strncat(full_path, tmp+1, strlen(tmp));
-	} else {
-		strncpy(full_path, __sws_dir, strlen(__sws_dir));
-		strncat(full_path, req->path, strlen(req->path));
-	}
-
-	fprintf(stderr, "%s\n", full_path);
+	full_path = req->path;
 
 	/* Stat the file */
 	if (stat(full_path, &stat_buf) < 0) {
@@ -694,73 +656,309 @@ sws_serve_file(struct request* req, int sock) {
 		else if (errno == ENOENT || errno == ENOTDIR)
 			http_status = STATUS_404;
 		else
-			http_status = STATUS_501;
+			http_status = STATUS_500;
 		perror("stat");
 		return -1;
 	}
 
-	/* Open file */
-	if ((fd = open(full_path, O_RDONLY)) < 0) {
-		http_status = STATUS_500;
-		perror("open");
-		return -1;
-	}
-
-	/* Get file size */
-	if ((n = lseek(fd, 0, SEEK_END)) < 0) {
-		http_status = STATUS_500;
-		perror("lseek");
-		return -1;
-	}
-
-	/* Reset offset */
-	if (lseek(fd, 0, SEEK_SET) < 0) {
-		http_status = STATUS_500;
-		perror("lseek");
-		return -1;
-	}
-
-	sws_response_header(sock, n);
-
-	while ((n = read(fd, buf, BUFF_SIZE)) > 0) {
-		if (send(sock, buf, strlen(buf), 0) < 0) {
+	if (S_ISDIR(stat_buf.st_mode)) {
+		sws_create_index(sock, &resp, full_path);
+	} else {
+		/* Open file */
+		if ((fd = open(full_path, O_RDONLY)) < 0) {
 			http_status = STATUS_500;
-			perror("send");
+			perror("open");
 			return -1;
 		}
-	}
-	if (n < 0) {
-		http_status = STATUS_500;
-		perror("read");
-		return -1;
-	}
 
-	if (full_path != NULL)
-		free(full_path);
+		/* Get file size */
+		if ((n = lseek(fd, 0, SEEK_END)) < 0) {
+			http_status = STATUS_500;
+			perror("lseek");
+			return -1;
+		}
+
+		/* Reset offset */
+		if (lseek(fd, 0, SEEK_SET) < 0) {
+			http_status = STATUS_500;
+			perror("lseek");
+			return -1;
+		}
+
+		strftime(last_mod, 50, RFC1123_DATE, gmtime(&stat_buf.st_mtime));
+
+		resp.length = n;
+		resp.content_type = TEXT_HTML;
+		resp.last_modified = last_mod;
+		sws_response_header(sock, &resp);
+
+		while ((n = read(fd, buf, BUFF_SIZE)) > 0) {
+			if (send(sock, buf, strlen(buf), 0) < 0) {
+				perror("send");
+				exit(EXIT_FAILURE);
+				/* NOTREACHED */
+			}
+		}
+
+		if (n < 0) {
+			perror("read");
+			exit(EXIT_FAILURE);
+			/* NOTREACHED */
+		}
+	}
 
 	return 0;
 }
 
 int
-sws_response_header(int sock, int len) {
+sws_response_header(int sock, struct response *resp) {
 
 	time_t now;
 	char buf[1024];
 	char timestr[50];
+	//char lastmodtime[50];
 
 	now = time(NULL);
-        strftime(timestr, sizeof(timestr),
-                "%a, %e %b %Y %T %Z", gmtime(&now));
+	strftime(timestr, sizeof(timestr),
+		"%a, %e %b %Y %T %Z", gmtime(&now));
 
-        sprintf(buf, "HTTP/1.0 %s\r\n"
-                     "Date: %s\r\n"
-                     "Server: SWS\r\n"
-                     "Content-Type: text/html\r\n"
-                     "\r\n", http_status, timestr);
+	if (strcmp(http_status, STATUS_200) == 0) {
+		sprintf(buf, "HTTP/1.0 %s\r\n"
+			"Date: %s\r\n"
+			"Server: SWS\r\n"
+			"Last-Modified: %s\r\n"
+			"Content-Type: text/html\r\n"
+			"Content-Length: %lu\r\n"
+			"\r\n", http_status, timestr, resp->last_modified, resp->length);
+	} else {
+		sprintf(buf, "HTTP/1.0 %s\r\n"
+			"Date: %s\r\n"
+			"Server: SWS\r\n"
+			"\r\n", http_status, timestr);
+	}
 
-        if (send(sock, buf, strlen(buf), 0) < 0) {
+	fprintf(stderr, "%s\n", buf);
+	if (send(sock, buf, strlen(buf), 0) < 0) {
 		perror("send");
 		return -1;
+	}
+
+	return 0;
+}
+
+int
+sws_execute_cgi(int sock, struct request *req) {
+
+	struct response resp;
+	struct stat stat_buf;
+	pid_t pid;
+	int n;
+	int pipe_fd[2];
+	int status;
+	char *tmp;
+	char buf[BUFF_SIZE];
+	char last_mod[50];
+
+	tmp = req->path;
+	tmp += strlen(__sws_dir);
+	while(*tmp == '/') tmp++;
+	//tmp++; //remove leading '/'
+	//file already validated
+
+	//stat for mtime
+	stat(tmp, &stat_buf);
+
+	if (pipe(pipe_fd) < 0) {
+		perror("pipe");
+		http_status = STATUS_500;
+		return -1;
+	}
+
+	if ((pid = fork()) < 0) {
+		perror("forking for cgi");
+		http_status = STATUS_500;
+		return -1;
+	}
+
+	if (pid == 0) { //child
+
+		//char query[BUFF_SIZE];
+
+		close(pipe_fd[0]);
+
+		/* Redirect CGI output to pipe */
+		dup2(pipe_fd[1], STDOUT_FILENO);
+
+		fprintf(stderr, "%s\n", tmp);
+
+		/* Execute CGI script */
+		if (execl(tmp, tmp, NULL) < 0) {
+			perror("execl");
+			close(pipe_fd[1]);
+			exit(EXIT_FAILURE);
+			/* NOTREACHED */
+		}
+		exit(EXIT_SUCCESS);
+	} else { //parent
+		bzero(buf, sizeof(buf));
+
+		if ((n = read(pipe_fd[0], buf, sizeof(buf))) < 0) {
+			perror("read");
+			return -1;
+		}
+
+		resp.content_type = TEXT_HTML;
+		resp.length = n;
+		strftime(last_mod, sizeof(last_mod), RFC1123_DATE, gmtime(&stat_buf.st_mtime));
+		resp.last_modified = last_mod;
+		sws_response_header(sock, &resp);
+		close(pipe_fd[1]);
+
+		if (send(sock, buf, strlen(buf), 0) < 0) {
+			perror("send");
+			exit(EXIT_FAILURE);
+			/* NOTREACHED */
+		}
+
+		waitpid(pid, &status, 0);
+	}
+
+	return 0;
+}
+
+int
+sws_create_index(int sock, struct response *resp, char *path) {
+
+	DIR *dp;
+	struct dirent **dirlist;
+	struct stat stat_buf;
+	int i, n;
+	int username_len;
+	int home_path_len;
+	int homedir;
+	char buf[PATH_MAX];
+	char *tmp;
+	char* username;
+	char index[BUFF_SIZE];
+
+	bzero(index, sizeof(index));
+
+	if ((dp = opendir(path)) == NULL) {
+		http_status = STATUS_500;
+		perror("opendir");
+		return -1;
+	}
+	tmp = malloc(PATH_MAX);
+	bzero(tmp, sizeof(tmp));
+
+	//folder has trailing slash by default
+
+	//fprintf(stderr, "path:%s\n", path);
+	homedir = 0;
+	home_path_len = 0;
+	if (strncmp(path, "/home/", 6) == 0) {
+		//black magic
+		fprintf(stderr, "homedir\n");
+		homedir = 1;
+		username = path + 6;
+		//get username length
+		for (i = 0; username[i] != '/'; i++);
+		username_len = i;
+		home_path_len = strlen("/home/")+username_len+strlen("/sws");
+		fprintf(stderr, "usernamelen: %d\n", username_len);
+		fprintf(stderr, "homepathlen: %d\n", home_path_len);
+	}
+
+	if (homedir) {
+		strncpy(tmp, path + home_path_len, strlen(path+home_path_len) + 1);
+	} else
+		strncpy(tmp, path + strlen(__sws_dir), strlen(path + strlen(__sws_dir))+1);
+
+	fprintf(stderr, "tmp: %s\n", tmp);
+
+	strncpy(index, "<html><body><h1>Index of ", 25);
+	if (homedir) {
+		strncat(index, "~", 1);
+		strncat(index, username, username_len);
+	}
+	strncat(index, tmp, strlen(tmp));
+	strncat(index, "</h1></br />", 12);
+
+	if ((n = scandir(path, &dirlist, NULL, alphasort)) < 0) {
+		perror("scandir");
+		return -1;
+	}
+
+	int slashpos;
+	slashpos = 0;
+	fprintf(stderr, "%s\n", path);
+	for (i = 0; i < n; i++) {
+		bzero(buf, sizeof(buf));
+		strncpy(buf, path, strlen(path));
+		strncat(buf, dirlist[i]->d_name, strlen(dirlist[i]->d_name));
+		stat(buf, &stat_buf);
+		//if file is not . or ..
+		if (strcmp(dirlist[i]->d_name, ".") != 0 &&
+			strcmp(dirlist[i]->d_name, "..") != 0) {
+			strncat(index, "<a href=\"", 9);
+			if (homedir) {
+				strncat(index, "/~", 6);
+				strncat(index, username, username_len);
+				strncat(index, tmp, strlen(tmp));
+				strncat(index, dirlist[i]->d_name + home_path_len,
+					strlen(dirlist[i]->d_name + home_path_len));
+				strncat(index, dirlist[i]->d_name, strlen(dirlist[i]->d_name));
+			} else {
+				strncat(index, tmp, strlen(tmp));
+				strncat(index, dirlist[i]->d_name, strlen(dirlist[i]->d_name));
+			}
+			if (S_ISDIR(stat_buf.st_mode))
+				strncat(index, "/", 1);
+		//if it is ..
+		} else if (strcmp(dirlist[i]->d_name, "..") == 0) {
+			strncat(index, "<a href=\"", 9);
+			slashpos = strrchr_pos(tmp+1, '/', strlen(tmp+1)-1);
+			fprintf(stderr, "tmp+1: %s\n", tmp+1);
+			fprintf(stderr, "%d\n", slashpos+1);
+			if (slashpos == -1)
+				slashpos = 0;
+			if (homedir) {
+				strncat(index, "/~", 6);
+				strncat(index, username, username_len);
+			}
+			strncat(index, tmp, slashpos+1);
+		//if it is .
+		} else {
+			strncat(index, "<a href=\"", 9);
+			if (homedir) {
+				strncat(index, "/~", 6);
+				strncat(index, username, username_len);
+				strncat(index, tmp, strlen(tmp));
+			} else
+	                        strncat(index, tmp, strlen(tmp));
+		}
+		strncat(index, "\">", 2);
+		strncat(index, dirlist[i]->d_name, strlen(dirlist[i]->d_name));
+		if (S_ISDIR(stat_buf.st_mode))
+			strncat(index, "/", 1);
+		strncat(index, "</a><br />", 10);
+		free(dirlist[i]);
+	}
+	free(dirlist);
+	free(tmp);
+	tmp = NULL;
+
+	strncat(index, "</body></html>", 14);
+	resp->length = strlen(index);
+	resp->content_type = TEXT_HTML;
+	sws_response_header(sock, resp);
+
+	fprintf(stderr, "%s\n", index);
+
+	if (send(sock, index, strlen(index), 0) < 0) {
+		perror("send");
+		exit(EXIT_FAILURE);
+		/* NOTREACHED */
 	}
 
 	return 0;

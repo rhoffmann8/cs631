@@ -44,7 +44,7 @@ mainloop() {
 	pid_t pid;
 	socklen_t sin_size;
 	int sock, domain, opt;
-	int conn, max_connections, pending_connections;
+	int conn, pending_connections;
 	char buf[1024];
 
 	/* Set port */
@@ -79,9 +79,6 @@ mainloop() {
 		else
 			sws6.sin6_addr = in6addr_any;
 	}
-
-	/* Set maximum connections */
-	max_connections = (opts.debug == 1) ? 1 : MAX_CONN;
 
 	/* Create socket */
 	if ((sock = socket(domain, SOCK_STREAM, 0)) < 0) {
@@ -118,8 +115,11 @@ mainloop() {
 	}
 
 	/* Connection accept loop */
-	cur_connections = 0;
+	//cur_connections = 0;
 	pending_connections = PENDING_CONN;
+
+	if (opts.debug)
+		pending_connections = 1;
 
 	/* Listen on socket */
 	if (listen(sock, pending_connections) < 0) {
@@ -130,34 +130,43 @@ mainloop() {
 
 	/* Accept loop */
 	do {
-		conn = accept(sock, 0, &sin_size);
-		if (conn == -1)
+		if ((conn = accept(sock, 0, &sin_size)) == -1)
 			perror("accept");
 		else {
-			cur_connections++;
-			if (cur_connections > max_connections)
+			fprintf(stderr, "connection accepted\n");
+			bzero(buf, sizeof(buf));
+
+			if (opts.debug) {
+				fprintf(stderr, "processing\n");
+				sws_request(conn);
 				close(conn);
-			else {
-				bzero(buf, sizeof(buf));
-				/* Fork to handle connection */
+			} else {
 				if ((pid = fork()) < 0) {
 					perror("error forking for connection");
 					exit(EXIT_FAILURE);
 					/* NOTREACHED */
-				}
-				else if (pid == 0) {
+				} else if (pid == 0) {
 					/* Child */
 					close(sock);
-					bzero(buf, sizeof(buf));
 
+					if (errno > 0)
+						perror("errno");
+
+					fprintf(stderr, "sending for processing\n");
 					/* Pass socket to handler */
 					sws_request(conn);
 
 					close(conn);
-					(errno > 0) ? exit(EXIT_FAILURE) : exit(EXIT_SUCCESS);
-					/* NOTREACHED */
-				}
-				else {
+					fprintf(stderr, "connection closed\n");
+					if (errno > 0) {
+						perror("errno");
+						exit(EXIT_FAILURE);
+						/* NOTREACHED */
+					} else {
+						exit(EXIT_SUCCESS);
+						/* NOTREACHED */
+					}
+				} else {
 					/* Parent */
 					close(conn);
 				}
@@ -169,7 +178,7 @@ mainloop() {
 void
 reap(int sig) {
 	/* Wait for dead processes in non-blocking mode */
-	cur_connections--;
+	//cur_connections--;
 	while(waitpid(-1, NULL, WNOHANG) > 0);
 }
 
@@ -229,7 +238,7 @@ main(int argc, char **argv) {
 
 	if (!opts.debug) {
 		/* Daemonize if -d not set */
-		if (daemon(0,0) < 0) {
+		if (daemon(1,1) < 0) {
 			perror("daemon");
 			exit(EXIT_FAILURE);
 			/* NOTREACHED */
