@@ -10,7 +10,8 @@
 
 /*
  * Function to check if a file.dir is in a given directory.
- * type is 0 to look for file, 1 for directory.
+ * Argument "type" is 0 to look for file, 1 for directory.
+ * Returns 1 if found, 0 if not found, and -1 on error.
  */
 int
 file_in_dir(DIR *dp, ino_t root_ino, ino_t needle_ino, char *dirname, int type) {
@@ -63,6 +64,10 @@ file_in_dir(DIR *dp, ino_t root_ino, ino_t needle_ino, char *dirname, int type) 
 	return 0;
 }
 
+/*
+ * Function to check if a file is inside a root path.
+ * Returns 1 if it is, else returns 0.
+ */
 int
 file_in_root(char *path) {
 
@@ -71,17 +76,13 @@ file_in_root(char *path) {
 
 	i = 0;
 	tmp = path;
-	/* If request is a user's dir, skip the first slash */
+	/* If request is a user's dir, treat all text after ~<user>/ as the path */
 	if (path[1] == '~') {
 		tmp++;
-
-		/*
-		 * If the user's directory was requested without
-		 * a trailing slash, increment i so it will pass
-		 * the verification later.
-		 */
 		if (strchr(tmp, '/') == NULL)
 			i++;
+		else
+			while (*tmp != '/') tmp++;
 	}
 
 	while (*tmp != '\0') {
@@ -104,13 +105,13 @@ file_in_root(char *path) {
 		else {
 			tmp++;
 		}
+
+		/* If we leave the root dir at any point, send 403 */
+		if (i < 1)
+			return 0;
 	}
 
-	/* If i is >= 1, we are inside the root */
-	if (i >= 1)
-		return 1;
-
-	return 0;
+	return 1;
 }
 
 /*
@@ -138,10 +139,6 @@ sws_file_path(char *root, char *req_path, char **full_path) {
 		else
 			i = strlen(tmp);
 	}
-		//len = strlen("/home/") + i + strlen("/sws");
-	//} else {
-		//len = strlen(tmp);
-	//}
 
 	bzero(full_path, sizeof(full_path));
 
@@ -157,8 +154,6 @@ sws_file_path(char *root, char *req_path, char **full_path) {
 		tmp_path[strlen(root)] = '\0';
 		strncat(tmp_path, req_path, strlen(req_path));
 	}
-
-	fprintf(stderr, "%s\n", tmp_path);
 
 	if (stat(tmp_path, &stat_buf) < 0) {
 		perror("utils.c: stat");
@@ -176,13 +171,15 @@ sws_file_path(char *root, char *req_path, char **full_path) {
 			tmp_path[strlen(tmp_path)-1] = '\0';
 	}
 
-	fprintf(stderr, "return: %s\n", tmp_path);
-
 	*full_path = tmp_path;
 
 	return 0;
 }
 
+/*
+ * Wrapper for strrchr which returns the numerical position
+ * of the character found in the string.
+ */
 int
 strrchr_pos(char *str, char c, int len) {
 
@@ -194,8 +191,6 @@ strrchr_pos(char *str, char c, int len) {
 
 	for (i = 0; i < len; i++)
 		buf[i] = str[i];
-
-	fprintf(stderr, "buf:%s\n", buf);
 
 	if ((ptr2 = strrchr(buf, c)) == NULL)
 		return -1;

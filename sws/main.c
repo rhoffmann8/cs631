@@ -115,7 +115,6 @@ mainloop() {
 	}
 
 	/* Connection accept loop */
-	//cur_connections = 0;
 	pending_connections = PENDING_CONN;
 
 	if (opts.debug)
@@ -133,11 +132,9 @@ mainloop() {
 		if ((conn = accept(sock, 0, &sin_size)) == -1)
 			perror("accept");
 		else {
-			fprintf(stderr, "connection accepted\n");
 			bzero(buf, sizeof(buf));
 
 			if (opts.debug) {
-				fprintf(stderr, "processing\n");
 				sws_request(conn);
 				close(conn);
 			} else {
@@ -149,17 +146,12 @@ mainloop() {
 					/* Child */
 					close(sock);
 
-					if (errno > 0)
-						perror("errno");
-
-					fprintf(stderr, "sending for processing\n");
 					/* Pass socket to handler */
 					sws_request(conn);
 
 					close(conn);
-					fprintf(stderr, "connection closed\n");
 					if (errno > 0) {
-						perror("errno");
+						perror("error");
 						exit(EXIT_FAILURE);
 						/* NOTREACHED */
 					} else {
@@ -178,7 +170,6 @@ mainloop() {
 void
 reap(int sig) {
 	/* Wait for dead processes in non-blocking mode */
-	//cur_connections--;
 	while(waitpid(-1, NULL, WNOHANG) > 0);
 }
 
@@ -228,17 +219,20 @@ main(int argc, char **argv) {
 		}
 	}
 
-	if (optind < argc) {
-		opts.dir = argv[optind];
-		optind++;
-	}
+	argc -= optind;
+	argv += optind;
+
+	if (argc < 1)
+		usage();
+
+	opts.dir = argv[0];
 
 	/* Option error checking done in sws_init */
 	sws_init(opts);
 
 	if (!opts.debug) {
 		/* Daemonize if -d not set */
-		if (daemon(1,1) < 0) {
+		if (daemon(1,0) < 0) {
 			perror("daemon");
 			exit(EXIT_FAILURE);
 			/* NOTREACHED */
