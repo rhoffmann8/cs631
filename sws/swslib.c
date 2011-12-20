@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "sws.h"
+#include "swshelpers.h"
 #include "utils.h"
 
 #define LOGFILE "sws.log"
@@ -240,11 +241,22 @@ sws_init(const struct swsopts opts) {
 		free(tmppath);
 }
 
+void
+sws_log(const char *msg) {
+
+	if (!__sws_debug) {
+		if (write(logfile_fd, msg, strlen(msg)) < 0)
+			perror("writing to logfile");
+	} else
+		printf("%s", msg);
+}
+
 /*
- * Function to log a request to a file or STDOUT.
+ * Function to extract components of the log string and
+ * assemble them into a char*.
  */
 void
-sws_log(struct request *req, struct response *resp) {
+sws_log_wrapper(struct request *req, struct response *resp) {
 
 	char buf[1024];
 	char timestr[50];
@@ -261,7 +273,9 @@ sws_log(struct request *req, struct response *resp) {
 		timestr, req->first_line, http_status,
 		resp->length);
 
-	if (!__sws_debug) {
+	sws_log(buf);
+
+	/*if (!__sws_debug) {
 		if (write(logfile_fd, buf, strlen(buf)) < 0) {
 			perror("writing to logfile");
 			exit(EXIT_FAILURE);
@@ -269,7 +283,7 @@ sws_log(struct request *req, struct response *resp) {
 	} else {
 		printf("%s %s %s %s %lu\n", req->ip,
 		timestr, req->first_line, http_status, resp->length);
-	}
+	}*/
 }
 
 /*
@@ -826,18 +840,19 @@ sws_response_header(int sock, struct request *req, struct response *resp) {
 	} else {
 		sprintf(html_msg, "<html><h1>%s</h1></html>",
 			http_status);
-		sprintf(buf, "HTTP/1.0 %s\r\n"
+		sprintf(buf, "HTTP/%s %s\r\n"
 			"Date: %s\r\n"
 			"Server: SWS\r\n"
 			"Content-Type: text/html\r\n"
 			"Content-Length: %lu\r\n"
-			"\r\n", http_status, timestr,
+			"\r\n", (req->simple == 1)? "0.9" : "1.0",
+			http_status, timestr,
 			(unsigned long)strlen(html_msg));
 		resp->length = (unsigned long)strlen(html_msg);
 	}
 
 	if (__sws_logfile)
-		sws_log(req, resp);
+		sws_log_wrapper(req, resp);
 
 	if (send(sock, buf, strlen(buf), 0) < 0) {
 		perror("send");
