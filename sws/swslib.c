@@ -577,7 +577,7 @@ sws_parse_method(struct request *req, char *buf) {
 	if ((strncmp(buf, CRLF, 2) == 0) && req->method == 0) {
 		/*HTTP 0.9 Simple-Request */
 		req->simple = 1;
-	} else if (strncmp(buf, "HTTP/1.1", 8) == 0) {
+	} else if (strncmp(buf, "HTTP/1.0", 8) == 0) {
 		/* HTTP 1.0 Full-Request */
 		req->simple = 0;
 	} else {
