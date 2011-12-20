@@ -119,16 +119,18 @@ file_in_root(char *path) {
  * or an absolute path to a /home/<user>/sws/ directory if
  * request began with '~'.
  */
-int
-sws_file_path(char *root, char *req_path, char **full_path) {
+char*
+sws_file_path(char *root, char *req_path) {
 
 	struct stat stat_buf;
-	int i;//, len;
+	int i;
 	char *tmp;
 	char *tmp_path;
 
-	tmp_path = malloc(PATH_MAX);
-	bzero(tmp_path, sizeof(tmp_path));
+	if ((tmp_path = malloc(PATH_MAX)) == NULL) {
+		fprintf(stderr, "malloc\n");
+		return NULL;
+	}
 
 	i = 0;
 	tmp = req_path;
@@ -139,8 +141,6 @@ sws_file_path(char *root, char *req_path, char **full_path) {
 		else
 			i = strlen(tmp);
 	}
-
-	bzero(full_path, sizeof(full_path));
 
 	if (req_path[1] == '~') {
 		tmp = req_path + 2;
@@ -157,10 +157,7 @@ sws_file_path(char *root, char *req_path, char **full_path) {
 
 	if (stat(tmp_path, &stat_buf) < 0) {
 		perror("utils.c: stat");
-		if (errno == ENOENT)
-			return -1;
-		else
-			return -2;
+		return NULL;
 	}
 
 	if (S_ISDIR(stat_buf.st_mode)) {
@@ -171,9 +168,7 @@ sws_file_path(char *root, char *req_path, char **full_path) {
 			tmp_path[strlen(tmp_path)-1] = '\0';
 	}
 
-	*full_path = tmp_path;
-
-	return 0;
+	return tmp_path;
 }
 
 /*

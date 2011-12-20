@@ -68,17 +68,6 @@ int logfile_fd;
 char *http_status;
 
 /*
- * Handler to handle connection timeout
- */
-void
-timeout(int sig) {
-	if (sig == SIGALRM) {
-		fprintf(stderr, "connection timed out\n");
-		exit(EXIT_FAILURE);
-	}
-}
-
-/*
  * Function to initialize server properties
  */
 void
@@ -298,13 +287,13 @@ sws_request(const int sock) {
 	struct sockaddr_storage client;
 	ino_t cgi_ino, path_ino;
 	int port, rval;
-	int n;
 	char *full_path, *tmp;
 	char ipstr[INET6_ADDRSTRLEN];
 	char buf[BUFF_SIZE];
 
 	request.path = NULL;
 	request.if_mod_since = NULL;
+	request.first_line = NULL;
 	resp.length = 0;
 	resp.content_type = NULL;
 
@@ -345,10 +334,6 @@ sws_request(const int sock) {
 	http_status = STATUS_200;
 
 	bzero(buf, sizeof(buf));
-
-	/* Set up connection timeout alarm */
-	signal(SIGALRM, timeout);
-	alarm(TIMEOUT_SECS);
 
 	/* Get method/path/protocol  */
 	if ((rval = sws_get_line(sock, buf, BUFF_SIZE)) < 0) {
@@ -393,16 +378,11 @@ sws_request(const int sock) {
 		}
 	}
 
-	if ((n = sws_file_path(__sws_dir, request.path, &full_path)) < 0) {
-		if (n == -1) {
-			http_status = STATUS_404;
-			sws_response_header(sock, &request, &resp);
-			return;
-		} else {
-			http_status = STATUS_500;
-			sws_response_header(sock, &request, &resp);
-			return;
-		}
+	if ((full_path =
+		sws_file_path(__sws_dir, request.path)) == NULL) {
+		http_status = STATUS_404;
+		sws_response_header(sock, &request, &resp);
+		return;
 	}
 
 	request.newpath = full_path;
@@ -410,7 +390,7 @@ sws_request(const int sock) {
 	/* Check for CGI request */
 	if (__sws_cgidir) {
 		/* Get inodes of request path and cgidir */
-		if (stat(full_path, &stat_buf) < 0) {
+		if (stat(request.newpath, &stat_buf) < 0) {
 			perror("can't stat request path");
 			if (errno == ENOENT || errno == ENOTDIR)
 				http_status = STATUS_404;
@@ -597,7 +577,7 @@ sws_parse_method(struct request *req, char *buf) {
 	if ((strncmp(buf, CRLF, 2) == 0) && req->method == 0) {
 		/*HTTP 0.9 Simple-Request */
 		req->simple = 1;
-	} else if (strncmp(buf, "HTTP/1.0", 8) == 0) {
+	} else if (strncmp(buf, "HTTP/1.1", 8) == 0) {
 		/* HTTP 1.0 Full-Request */
 		req->simple = 0;
 	} else {
@@ -705,6 +685,8 @@ sws_serve_file(int sock, struct request* req) {
 	}
 	full_path = req->newpath;
 
+	fprintf(stderr, "%s\n", full_path);
+
 	/* Stat the file */
 	if (stat(full_path, &stat_buf) < 0) {
 		if (errno == EACCES)
@@ -728,7 +710,7 @@ sws_serve_file(int sock, struct request* req) {
 		index = 0;
 		while ((dir = readdir(dp)) != NULL) {
 			if (strcmp(dir->d_name, "index.html") == 0) {
-				full_path = malloc(strlen(full_path)+11);
+				full_path = malloc(strlen(req->newpath)+11);
 				strcpy(full_path, req->newpath);
 				strncat(full_path, "index.html", 10);
 				index = 1;
@@ -736,7 +718,7 @@ sws_serve_file(int sock, struct request* req) {
 		}
 
 		if (index == 0) {
-			sws_create_index(sock, req, &resp, full_path);
+			sws_create_index(sock, req, &resp, req->newpath);
 			return 0;
 		}
 	}
@@ -806,8 +788,11 @@ sws_serve_file(int sock, struct request* req) {
 		}
 	}
 
-	if (index == 1)
+	/* If a new char* was malloc'd for index.html, free */
+	if (full_path != req->newpath) {
 		free(full_path);
+		full_path = NULL;
+	}
 
 	return 0;
 }
@@ -994,8 +979,10 @@ sws_execute_cgi(int sock, struct request *req) {
 					break;
 				flag = 1;
 				if (strncasecmp(buf, "Content-Type:", 13) == 0) {
-					if (resp.content_type != NULL)
+					if (resp.content_type != NULL) {
 						free(resp.content_type);
+						resp.content_type = NULL;
+					}
 					if ((resp.content_type =
 						malloc(strlen(buf+13+1))) ==
 							NULL) {
@@ -1049,8 +1036,10 @@ sws_execute_cgi(int sock, struct request *req) {
 			}
 		}
 
-		if (resp.content_type != NULL && flag != 1)
+		if (resp.content_type != NULL && flag != 1) {
 			free(resp.content_type);
+			resp.content_type = NULL;
+		}
 		waitpid(pid, &status, 0);
 	}
 
@@ -1121,8 +1110,6 @@ sws_create_index(int sock, struct request* req,
 		return -1;
 	}
 
-	int slashpos;
-	slashpos = 0;
 	for (i = 0; i < n; i++) {
 		bzero(buf, sizeof(buf));
 		strncpy(buf, path, strlen(path));
@@ -1146,22 +1133,10 @@ sws_create_index(int sock, struct request* req,
 			}
 			if (S_ISDIR(stat_buf.st_mode))
 				strncat(index, "/", 1);
-		/* If it is .. */
-		} else if (strcmp(dirlist[i]->d_name, "..") == 0) {
-			strncat(index, "<a href=\"", 9);
-			slashpos = strrchr_pos(tmp+1, '/', strlen(tmp+1)-1);
-			if (slashpos == -1)
-				slashpos = 0;
-			if (homedir) {
-				strncat(index, "/~", 6);
-				strncat(index, username, username_len);
-			}
-			strncat(index, tmp, slashpos+1);
-			if (index[strlen(index)-1] != '/')
-				strncat(index, "/", 1);
 		}
 
-		if (strcmp(dirlist[i]->d_name, ".") != 0) {
+		if ((strcmp(dirlist[i]->d_name, ".") != 0) &&
+			(strcmp(dirlist[i]->d_name, "..") != 0)) {
 			strncat(index, "\">", 2);
 			if (strcmp(dirlist[i]->d_name, "..") == 0)
 				strncat(index, "Parent Directory", 16);
