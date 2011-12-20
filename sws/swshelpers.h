@@ -26,18 +26,25 @@ struct response {
  * creates the string to send to the log. */
 void sws_log_wrapper(struct request*, struct response*);
 
+/* Function to read a CRLF-terminated line from a socket */
 int sws_get_line(int, char*, int);
 
+/* Function to parse first line of request */
 int sws_parse_method(struct request*, char*);
 
+/* Function to parse request headers */
 int sws_parse_header(struct request*, char*);
 
+/* Functioon to serve a regular file */
 int sws_serve_file(int, struct request*);
 
+/* Function to construct and send response header */
 int sws_response_header(int, struct request*, struct response*);
 
+/* Function to execute CGI file */
 int sws_execute_cgi(int, struct request*);
 
+/* Function to create directory index for directory with no index.html */
 int sws_create_index(int, struct request*, struct response*, char*);
 
 #endif

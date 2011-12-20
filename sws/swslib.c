@@ -262,8 +262,6 @@ sws_log_wrapper(struct request *req, struct response *resp) {
 	char timestr[50];
 	time_t now;
 
-	fprintf(stderr, "%lu\n", resp->length);
-
 	bzero(buf, sizeof(buf));
 	now = time(NULL);
 	strftime(timestr, sizeof(timestr),
@@ -274,16 +272,6 @@ sws_log_wrapper(struct request *req, struct response *resp) {
 		resp->length);
 
 	sws_log(buf);
-
-	/*if (!__sws_debug) {
-		if (write(logfile_fd, buf, strlen(buf)) < 0) {
-			perror("writing to logfile");
-			exit(EXIT_FAILURE);
-		}
-	} else {
-		printf("%s %s %s %s %lu\n", req->ip,
-		timestr, req->first_line, http_status, resp->length);
-	}*/
 }
 
 /*
@@ -698,8 +686,6 @@ sws_serve_file(int sock, struct request* req) {
 		return -1;
 	}
 	full_path = req->newpath;
-
-	fprintf(stderr, "%s\n", full_path);
 
 	/* Stat the file */
 	if (stat(full_path, &stat_buf) < 0) {
