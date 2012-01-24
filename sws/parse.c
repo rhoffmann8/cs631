@@ -34,18 +34,9 @@ http_realpath(char *path, char *serve_dir) {
 		return NULL;
 	}
 
-	if (homedir) {
-		strncpy(tmp, "/home/", 6);
-		strncat(tmp, username, username_len);
-		strncat(tmp, "/sws", 4);
-	} else {
-		strncpy(tmp, serve_dir, strlen(serve_dir));
-	}
-
 	while (*path != '\0') {
 		if (strlen(path) == 1)
 			break;
-
 		if (strncmp(path, "//", 2) == 0) {
 			path++;
 		} else if ((strncmp(path, "/.", 2) == 0)
@@ -55,7 +46,6 @@ http_realpath(char *path, char *serve_dir) {
 			&& (path[3] == '/' || path[3] == '\0')) {
 			if ((tmp2 = strrchr(tmp, '/')) != NULL)
 				*tmp2 = '\0';
-				//bzero(tmp2, sizeof(tmp2));
 			path += 3;
 		} else {
 			for (i = 1; path[i] != '/' && path[i] != '\0'; i++);
@@ -63,8 +53,24 @@ http_realpath(char *path, char *serve_dir) {
 			path += i;
 		}
 	}
-	if (strlen(tmp) == 0)
-		strncpy(tmp, "/", 1);
+	//if (strlen(tmp) == 0)
+	//	strncpy(tmp, "/", 1);
+
+	tmp2 = calloc(1, sizeof(tmp)+1);
+	strncpy(tmp2, tmp, strlen(tmp));
+
+	if (homedir) {
+		memset(tmp, 0, alloc_size);
+		strncpy(tmp, "/home/", 6);
+		strncat(tmp, username, username_len);
+		strncat(tmp, "/sws", 4);
+	} else {
+		strncpy(tmp, serve_dir, strlen(serve_dir));
+	}
+
+	strncat(tmp, tmp2, strlen(tmp2));
+	free(tmp2);
+
 	printf("leaving http_realpath()\n");
 	return tmp;
 }
