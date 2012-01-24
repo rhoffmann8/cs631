@@ -1,7 +1,8 @@
 CFLAGS=-Wall -Werror -fPIC
 LDFLAGS=-Wl,-rpath,.
 
-LIBOBJS=swslib.o utils.o
+#LIBOBJS=swslib.o utils.o extensions.o
+LIBOBJS=content_type.o files.o log.o list.o parse.o request.o response.o server.o
 SWSOBJS=main.o
 
 LIBRARY=libsws.so
