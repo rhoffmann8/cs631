@@ -21,7 +21,9 @@
 #include <strings.h>
 #include <unistd.h>
 
-#include "sws.h"
+//#include "sws.h"
+#include "defines.h"
+#include "server.h"
 
 /* Connection properties */
 #define MAX_CONN 20
@@ -135,7 +137,7 @@ mainloop() {
 			bzero(buf, sizeof(buf));
 
 			if (opts.debug) {
-				sws_request(conn);
+				sws_handle_request(conn);
 				close(conn);
 			} else {
 				if ((pid = fork()) < 0) {
@@ -147,7 +149,7 @@ mainloop() {
 					close(sock);
 
 					/* Pass socket to handler */
-					sws_request(conn);
+					sws_handle_request(conn);
 
 					close(conn);
 					if (errno > 0) {
