@@ -1,56 +1,50 @@
-CS631 - Advanced Programming in the UNIX Environment
-Final Project
+sws - A simple HTTP/1.0 web server
+Copyright Rob Hoffmann, 2012
+Once in a more complete state, I will switch this program to an open source license.
 
-Implement the sws(1) command as described in the manual page provided to you
-at: http://www.cs.stevens.edu/~jschauma/631/sws.1.pdf
+Usage:
+	sws [-6dh] [-c cgidir] [-i address] [-l file] [-p port] [-s secdir -k key] rootdir
 
-As usual, the general homework guidelines apply:
-http://www.cs.stevens.edu/~jschauma/631/hw
+sws is a small web server created for an assignment I had in college. After the class was
+completed I decided to continue work on it.
 
-You should accompany the program with a Makefile and, if you have any
-commentary on your program, a README.  The due date for the final project is
-2011-12-20, 10:59:59.
+The server supports IPv4 and IPv6 connections, logging, and execution of CGI scripts. It
+currently accepts HTTP/1.0 requests only, but I plan to expand functionality to allow
+HTTP/1.1 requests to be received.
 
-This is a non-trivial programming assignment -- do not postpone starting to
-work on this!  Try to first get the basics right, then add functionality one
-by one, always ensuring that the added code did not break any previous
-functionality.  If you're stuck, describe your problem on the mailing list.
+Todo:
+	-Support for POST requests
+	-Encryption (-s and -k options)
+	-General refactoring
+	-Add test scripts with sample requests and expected output
 
+Options:
 
-Considerations for this project:
---------------------------------
+	-6	Listen on IPv6.
 
-Please carefully read http://www.ietf.org/rfc/rfc1945.txt to understand
-version 1.0 of the Hyper Text Transfer Protocol.
+	-c cgidir
+		Specifies a directory that hosts CGI files. This directory must be located
+		inside the document root.
 
-Please carefully read http://www.citycat.ru/doc/CGI/overview/overview.html
-to understand version 1.1 of the Common Gateway Interface.
+	-d	Enable debug mode. sws will listen for only one connection at a time, and
+		all console output will be output to stderr rather than silenced.
 
-Your program should behave as one would expect from a regular system daemon.
-That is, it should detach from the controlling terminal and run in the
-background, accept multiple simultaneous connections, not generate any
-messages on stdout unless in debugging mode etc.
+	-h	Print usage information and exit.
 
-Your program does have to return normal HTTP/1.0 status codes as described in
-the RFC.
+	-i address
+		Listen on the specified IP.
 
-Your program does NOT need to support the POST method.
+	-k key	
+		Key to be used for encrypting content within the secure directory.
+		Not yet implemented.
+	
+	-l logfile
+		Log connection information to the specified logfile. Will not be used if
+		debug mode is specified.
 
-Your program does NOT need to support the "-s dir -k key" options.
+	-p port
+		Listen on the given port.
 
-Your program does NOT need to support logging.
-
-
-Extra credit:
--------------
-
-The following are ways to gain extra-credit.  Please only start working on
-these features if you are satisfied with the basic functionality.
-
-Implementing support for IPv6: +10
-
-Implementing support for logging: +10
-
-Implementing support for POST: +30
-
-Implementing support for encrypted content: +50
+	-s secdir
+		Enable "secure" mode for this directory. All content will be encrypted 
+		using the key specified with -k. Not yet implemented.
