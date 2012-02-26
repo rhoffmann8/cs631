@@ -137,11 +137,3 @@ my_realpath(char *path) {
 
 	return ret;
 }
-
-int
-main(int argc, char **argv) {
-
-	printf("%s\n", my_realpath(argv[1]));
-
-	return 0;
-}
