@@ -78,7 +78,6 @@ load_content_types(struct list *ctypes) {
 				fprintf(stderr, "malloc error\n");
 				return -1;
 			}
-			printf("token:%s\n", token);
 			strncpy(tmp, token, strlen(token));
 			if (tmp[strlen(tmp)-1] == '\n')
 				tmp[strlen(tmp)-1] = '\0';

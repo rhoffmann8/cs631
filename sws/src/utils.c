@@ -72,7 +72,7 @@ my_realpath(char *path) {
 	if (path[0] != '/') {
 		abs = 0;
 		getcwd(cwd, PATH_MAX);
-		alloc_size = strlen(path) + strlen(cwd) + 1;
+		alloc_size = strlen(path) + strlen(cwd) + 2;
 	} else {
 		abs = 1;
 		alloc_size = strlen(path) + 1;
