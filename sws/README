@@ -1,7 +1,5 @@
 sws - A simple HTTP/1.0 web server
 Copyright Rob Hoffmann, 2012
-Once in a more complete state, I will switch this program to an open source license.
-However this is a private repo, so how are you reading this anyway?
 
 Usage:
 	sws [-6dh] [-c cgidir] [-i address] [-l file] [-p port] [-s secdir -k key] rootdir
